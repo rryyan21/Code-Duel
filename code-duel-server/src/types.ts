@@ -14,12 +14,15 @@ export interface Bot {
   isAlive(): boolean;
 }
 
+export type SupportedLanguage = 'javascript' | 'typescript' | 'python';
+
 export interface Player {
   id: string;
   socketId: string;
   username: string;
   bot: Bot;
   code: string;
+  language: SupportedLanguage;
   wins: number;
   losses: number;
 }
@@ -52,6 +55,10 @@ export interface GameContext {
     position: Position;
     health: number;
   };
+  opponents: Array<{
+    position: Position;
+    health: number;
+  }>;
   grid: {
     width: number;
     height: number;
@@ -62,5 +69,6 @@ export interface MatchmakingPlayer {
   socketId: string;
   username: string;
   socket: any; // Socket.io socket
+  numPlayers?: number;
 }
 

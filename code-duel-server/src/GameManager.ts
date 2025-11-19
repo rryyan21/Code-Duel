@@ -8,13 +8,14 @@ export class GameManager {
 
   constructor(private io: Server) {}
 
-  createGame(player1: any, player2: any): Game {
+  createGame(players: any[]): Game {
     const gameId = uuidv4();
-    const game = new Game(gameId, player1, player2, this.io);
+    const game = new Game(gameId, players, this.io);
     
     this.games.set(gameId, game);
-    this.playerGameMap.set(player1.socketId, gameId);
-    this.playerGameMap.set(player2.socketId, gameId);
+    players.forEach(player => {
+      this.playerGameMap.set(player.socketId, gameId);
+    });
 
     return game;
   }

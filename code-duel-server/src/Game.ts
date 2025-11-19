@@ -1,5 +1,5 @@
 import { Server } from 'socket.io';
-import { GameState, Player, Action, GameContext } from './types';
+import { GameState, Player, Action, GameContext, Position } from './types';
 import { Bot } from './Bot';
 import { CodeExecutor } from './CodeExecutor';
 import { v4 as uuidv4 } from 'uuid';
@@ -12,8 +12,7 @@ export class Game {
 
   constructor(
     public readonly id: string,
-    private player1: any,
-    private player2: any,
+    private playersList: any[],
     private io: Server
   ) {
     this.codeExecutor = new CodeExecutor();
@@ -22,27 +21,23 @@ export class Game {
 
   private initializeGameState(): GameState {
     const players = new Map<string, Player>();
+    const numPlayers = this.playersList.length;
 
-    const bot1 = new Bot({ x: 1, y: 5 });
-    players.set(this.player1.socketId, {
-      id: uuidv4(),
-      socketId: this.player1.socketId,
-      username: this.player1.username,
-      bot: bot1,
-      code: '',
-      wins: 0,
-      losses: 0
-    });
+    // Position players based on count
+    const positions = this.getPlayerPositions(numPlayers);
 
-    const bot2 = new Bot({ x: 8, y: 5 });
-    players.set(this.player2.socketId, {
-      id: uuidv4(),
-      socketId: this.player2.socketId,
-      username: this.player2.username,
-      bot: bot2,
-      code: '',
-      wins: 0,
-      losses: 0
+    this.playersList.forEach((playerData, index) => {
+      const bot = new Bot(positions[index]);
+      players.set(playerData.socketId, {
+        id: uuidv4(),
+        socketId: playerData.socketId,
+        username: playerData.username,
+        bot: bot,
+        code: '',
+        language: 'javascript',
+        wins: 0,
+        losses: 0
+      });
     });
 
     return {
@@ -55,6 +50,19 @@ export class Game {
     };
   }
 
+  private getPlayerPositions(numPlayers: number): Position[] {
+    switch (numPlayers) {
+      case 2:
+        return [{ x: 1, y: 5 }, { x: 8, y: 5 }];
+      case 3:
+        return [{ x: 1, y: 5 }, { x: 9, y: 5 }, { x: 5, y: 1 }];
+      case 4:
+        return [{ x: 1, y: 1 }, { x: 8, y: 1 }, { x: 1, y: 8 }, { x: 8, y: 8 }];
+      default:
+        return [{ x: 1, y: 5 }, { x: 8, y: 5 }];
+    }
+  }
+
   start() {
     console.log(`Game ${this.id} starting!`);
     this.state.status = 'running';
@@ -62,14 +70,20 @@ export class Game {
     this.tickInterval = setInterval(() => this.tick(), this.TICK_RATE);
   }
 
-  private tick() {
+  private async tick() {
+    const actionPromises: Promise<void>[] = [];
+    
     for (const [playerId, player] of this.state.players.entries()) {
       if (player.code && player.bot.isAlive()) {
         const gameContext = this.buildGameContext(playerId);
-        const action = this.codeExecutor.execute(player.code, gameContext);
-        this.executeAction(player.bot, action, playerId);
+        actionPromises.push(
+          this.codeExecutor.execute(player.code, player.language, gameContext)
+            .then(action => this.executeAction(player.bot, action, playerId))
+        );
       }
     }
+
+    await Promise.all(actionPromises);
 
     const winner = this.checkWinner();
     if (winner) {
@@ -83,8 +97,23 @@ export class Game {
 
   private buildGameContext(playerId: string): GameContext {
     const player = this.state.players.get(playerId)!;
-    const opponent = Array.from(this.state.players.values())
-      .find(p => p.socketId !== playerId)!;
+    const allOpponents = Array.from(this.state.players.values())
+      .filter(p => p.socketId !== playerId && p.bot.isAlive())
+      .map(p => ({
+        position: { ...p.bot.position },
+        health: p.bot.health
+      }));
+
+    // Find closest opponent for backward compatibility
+    const closestOpponent = allOpponents.length > 0 
+      ? allOpponents.reduce((closest, current) => {
+          const closestDist = Math.abs(closest.position.x - player.bot.position.x) + 
+                             Math.abs(closest.position.y - player.bot.position.y);
+          const currentDist = Math.abs(current.position.x - player.bot.position.x) + 
+                             Math.abs(current.position.y - player.bot.position.y);
+          return currentDist < closestDist ? current : closest;
+        })
+      : allOpponents[0] || { position: { x: 0, y: 0 }, health: 0 };
 
     return {
       myBot: {
@@ -92,10 +121,8 @@ export class Game {
         health: player.bot.health,
         facing: player.bot.facing
       },
-      opponent: {
-        position: { ...opponent.bot.position },
-        health: opponent.bot.health
-      },
+      opponent: closestOpponent,
+      opponents: allOpponents,
       grid: {
         width: this.state.grid.width,
         height: this.state.grid.height
@@ -121,14 +148,17 @@ export class Game {
       case 'right': targetPos.x++; break;
     }
 
-    const opponent = Array.from(this.state.players.values())
-      .find(p => p.socketId !== attackerId);
+    // Check all opponents for hits
+    const opponents = Array.from(this.state.players.values())
+      .filter(p => p.socketId !== attackerId && p.bot.isAlive());
 
-    if (opponent && 
-        opponent.bot.position.x === targetPos.x && 
-        opponent.bot.position.y === targetPos.y) {
-      opponent.bot.takeDamage(10);
-      console.log(`Attack hit! ${opponent.username}'s bot now at ${opponent.bot.health} HP`);
+    for (const opponent of opponents) {
+      if (opponent.bot.position.x === targetPos.x && 
+          opponent.bot.position.y === targetPos.y) {
+        opponent.bot.takeDamage(10);
+        console.log(`Attack hit! ${opponent.username}'s bot now at ${opponent.bot.health} HP`);
+        break; // Only hit one opponent per attack
+      }
     }
   }
 
@@ -160,11 +190,12 @@ export class Game {
     });
   }
 
-  updatePlayerCode(socketId: string, code: string) {
+  updatePlayerCode(socketId: string, code: string, language: string = 'javascript') {
     const player = this.state.players.get(socketId);
     if (player) {
       player.code = code;
-      console.log(`Updated code for ${player.username}`);
+      player.language = language as any;
+      console.log(`Updated code for ${player.username} (${language})`);
     }
   }
 

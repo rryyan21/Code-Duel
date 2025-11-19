@@ -16,19 +16,20 @@ export class GameServer {
     this.io.on('connection', (socket: Socket) => {
       console.log('Player connected:', socket.id);
 
-      socket.on('findMatch', (username: string) => {
-        console.log(`${username} (${socket.id}) looking for match`);
+      socket.on('findMatch', (data: { username: string; numPlayers?: number }) => {
+        const numPlayers = data.numPlayers || 2;
+        console.log(`${data.username} (${socket.id}) looking for ${numPlayers}-player match`);
         this.matchmaking.addPlayer({
           socketId: socket.id,
-          username,
+          username: data.username,
           socket
-        });
+        }, numPlayers);
       });
 
-      socket.on('submitCode', (data: { code: string }) => {
+      socket.on('submitCode', (data: { code: string; language?: string }) => {
         const game = this.gameManager.getGameByPlayer(socket.id);
         if (game) {
-          game.updatePlayerCode(socket.id, data.code);
+          game.updatePlayerCode(socket.id, data.code, data.language || 'javascript');
         }
       });
 

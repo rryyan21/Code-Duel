@@ -3,45 +3,61 @@ import { GameManager } from './GameManager';
 import { MatchmakingPlayer } from './types';
 
 export class Matchmaking {
-  private queue: MatchmakingPlayer[] = [];
+  private queues: Map<number, MatchmakingPlayer[]> = new Map(); // numPlayers -> queue
 
   constructor(
     private gameManager: GameManager,
     private io: Server
-  ) {}
+  ) {
+    // Initialize queues for 2, 3, 4 players
+    this.queues.set(2, []);
+    this.queues.set(3, []);
+    this.queues.set(4, []);
+  }
 
-  addPlayer(player: MatchmakingPlayer) {
-    this.queue.push(player);
-    console.log(`Player ${player.username} joined queue. Queue size: ${this.queue.length}`);
+  addPlayer(player: MatchmakingPlayer, numPlayers: number = 2) {
+    const queue = this.queues.get(numPlayers) || [];
+    queue.push({ ...player, numPlayers });
+    this.queues.set(numPlayers, queue);
+    
+    console.log(`Player ${player.username} joined ${numPlayers}-player queue. Queue size: ${queue.length}`);
 
-    player.socket.emit('queueJoined', { position: this.queue.length });
+    player.socket.emit('queueJoined', { position: queue.length, numPlayers });
 
-    if (this.queue.length >= 2) {
-      this.createMatch();
+    if (queue.length >= numPlayers) {
+      this.createMatch(numPlayers);
     }
   }
 
-  private createMatch() {
-    const player1 = this.queue.shift()!;
-    const player2 = this.queue.shift()!;
+  private createMatch(numPlayers: number) {
+    const queue = this.queues.get(numPlayers) || [];
+    const players: MatchmakingPlayer[] = [];
+    
+    for (let i = 0; i < numPlayers && queue.length > 0; i++) {
+      players.push(queue.shift()!);
+    }
+    
+    this.queues.set(numPlayers, queue);
 
-    console.log(`Creating match: ${player1.username} vs ${player2.username}`);
+    const usernames = players.map(p => p.username).join(', ');
+    console.log(`Creating ${numPlayers}-player match: ${usernames}`);
 
-    const game = this.gameManager.createGame(player1, player2);
+    const game = this.gameManager.createGame(players);
 
-    player1.socket.join(game.id);
-    player2.socket.join(game.id);
-
-    player1.socket.emit('matchFound', {
-      gameId: game.id,
-      opponent: player2.username,
-      yourBotId: player1.socketId
+    players.forEach(player => {
+      player.socket.join(game.id);
     });
 
-    player2.socket.emit('matchFound', {
-      gameId: game.id,
-      opponent: player1.username,
-      yourBotId: player2.socketId
+    const opponentNames = players.map(p => p.username);
+    players.forEach(player => {
+      const otherPlayers = opponentNames.filter(name => name !== player.username);
+      player.socket.emit('matchFound', {
+        gameId: game.id,
+        opponents: otherPlayers,
+        opponent: otherPlayers[0], // For backward compatibility
+        yourBotId: player.socketId,
+        numPlayers
+      });
     });
 
     console.log(`Match created! Starting in 3 seconds...`);
@@ -53,10 +69,14 @@ export class Matchmaking {
   }
 
   removePlayer(socketId: string) {
-    const initialLength = this.queue.length;
-    this.queue = this.queue.filter(p => p.socketId !== socketId);
-    if (this.queue.length < initialLength) {
-      console.log(`Removed player ${socketId} from queue`);
+    for (const [numPlayers, queue] of this.queues.entries()) {
+      const initialLength = queue.length;
+      const filtered = queue.filter(p => p.socketId !== socketId);
+      if (filtered.length < initialLength) {
+        this.queues.set(numPlayers, filtered);
+        console.log(`Removed player ${socketId} from ${numPlayers}-player queue`);
+        break;
+      }
     }
   }
 }
